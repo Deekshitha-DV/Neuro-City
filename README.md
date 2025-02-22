@@ -11,9 +11,6 @@ This project is a *real-time traffic management system* that leverages Azure ser
 - Dynamic traffic signal control based on vehicle count
 - Error handling and logging for robust operation
 
-## System Architecture
-![System Architecture](assets/system_architecture.png)
-
 ## Prerequisites
 - Azure account with required services (Computer Vision, Data Lake, IoT Hub)
 - Python 3.8+
