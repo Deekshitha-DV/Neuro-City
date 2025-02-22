@@ -1,0 +1,14 @@
+## Azure Computer Vision
+1. Navigate to the Azure portal.
+2. Create a new Computer Vision resource.
+3. Note down the endpoint and key.
+
+## Azure Data Lake Storage Gen2
+1. Create a new Storage account.
+2. Enable hierarchical namespace.
+3. Create a container for storing traffic data.
+
+## Azure IoT Hub
+1. Create a new IoT Hub.
+2. Register your IoT device.
+3. Note down the connection string.
