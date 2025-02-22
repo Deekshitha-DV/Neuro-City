@@ -1,0 +1,22 @@
+IoT Edge Device: Captures real-time traffic data using a camera.
+Azure IoT Hub: Receives traffic data from the IoT Edge device.
+Azure Computer Vision: Analyzes the captured images to detect vehicles.
+Azure Data Lake Storage: Stores the analyzed traffic data.
+Azure Functions: Processes the data and controls traffic signals dynamically.
+
+**Architecture Diagram**
++-------------------+       +-------------------+       +-------------------+
+|                   |       |                   |       |                   |
+|  IoT Edge Device  +------>+    Azure IoT Hub   +------>+ Azure Computer    |
+|  (Camera)         |       |                   |       | Vision            |
+|                   |       |                   |       |                   |
++-------------------+       +-------------------+       +-------------------+
+        |                           |                           |
+        |                           |                           |
+        v                           v                           v
++-------------------+       +-------------------+       +-------------------+
+|                   |       |                   |       |                   |
+| Azure Data Lake   +------>+ Azure Functions   +------>+ Traffic Signal    |
+| Storage           |       |                   |       | Control           |
+|                   |       |                   |       |                   |
++-------------------+       +-------------------+       +-------------------+
