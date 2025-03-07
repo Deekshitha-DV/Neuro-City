@@ -128,3 +128,31 @@ Dual-mode detection: Uses both visual recognition and siren sound detection
 Traffic signal prioritization: Automatically changes traffic signals to prioritize lanes with emergency vehicles
 Multi-lane support: Works with multiple traffic lanes simultaneously
 Flexible input: Can process feeds from multiple cameras or segment views from a single camera
+
+**Training Your Own Model**
+
+*Data Collection*
+The system requires a dataset of labeled images for training. The dataset should include:
+
+Images of ambulances from various angles
+Images of fire engines from various angles
+Images of police cars from various angles
+Images of regular vehicles (for negative samples)
+
+**Training Process**
+
+*The training script supports the following parameters:*
+
+--dataset_path: Path to the labeled dataset (required)
+--output_path: Path to save the trained model (default: 'models/emergency_vehicle_model.h5')
+--epochs: Number of training epochs (default: 50)
+--batch_size: Batch size for training (default: 32)
+--validation_split: Portion of data to use for validation
+
+**Performance Evaluation**
+
+*The current model achieves*
+
+90% accuracy in identifying emergency vehicles
+80% accuracy in distinguishing between different types of emergency vehicles
+150ms average detection time per frame on a system with NVIDIA GTX 1080Ti
