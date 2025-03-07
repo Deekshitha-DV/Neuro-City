@@ -8,20 +8,21 @@ NumPy 1.20+
 bash: install -r requirements.txt
 Installation
 
-Clone the repository:
+**Clone the repository:**
 
 bash: clone https://github.com/yourusername/emergency-vehicle-detection.git
 cd emergency-vehicle-detection
 
-Install dependencies:
+**Install dependencies:**
 
 bash: install -r requirements.txt
 
-Download the pre-trained model (or train your own):
+**Download the pre-trained model (or train your own):**
 
 bash:# If using pre-trained model
 python download_model.py
 
-# If training your own model
+**Training the model**
+
 python train_model.py --dataset_path /path/to/your/dataset
 Usage
