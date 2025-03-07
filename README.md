@@ -115,4 +115,16 @@ def send_iot_message(vehicle_count):
     except Exception as e:
         print(f"Error sending IoT message: {e}")
 **docs/azure_resource_setup.md**
-markdown
+markdown    
+
+**Emergency Vehicle Detection and Traffic Signal Prioritization System**
+
+This repository contains a computer vision and audio processing system that detects emergency vehicles (ambulances, fire engines, and police cars) in traffic footage and automatically prioritizes traffic signals to give them right of way. The system works with both moving and still video footage and can process multiple lanes simultaneously.
+
+**Key Features**
+
+Multi-vehicle detection: Identifies ambulances, fire engines, and police vehicles
+Dual-mode detection: Uses both visual recognition and siren sound detection
+Traffic signal prioritization: Automatically changes traffic signals to prioritize lanes with emergency vehicles
+Multi-lane support: Works with multiple traffic lanes simultaneously
+Flexible input: Can process feeds from multiple cameras or segment views from a single camera
