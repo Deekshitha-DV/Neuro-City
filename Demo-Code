@@ -1,0 +1,324 @@
+import cv2
+import numpy as np
+import tkinter as tk
+from tkinter import messagebox
+from PIL import Image, ImageTk
+import time
+import threading
+
+class TrafficAnalyzer:
+    def __init__(self):
+        # Use MOG2 with optimized parameters for better motion detection
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=200, varThreshold=25, detectShadows=False)
+        self.lane_mask = None
+        self.reference_image = None
+        self.road_capacity = 20
+        self.min_contour_area = 400
+        
+    def setup_lane(self, frame, top=50, bottom=100, left=0, right=100):
+        if frame is None:
+            return False
+        h, w = frame.shape[:2]
+        self.lane_mask = np.zeros((h, w), dtype=np.uint8)
+        top_px, bottom_px = int((top/100)*h), int((bottom/100)*h)
+        left_px, right_px = int((left/100)*w), int((right/100)*w)
+        self.lane_mask[top_px:bottom_px, left_px:right_px] = 255
+        self.reference_image = frame.copy()
+        return True
+    
+    def analyze_traffic(self, frame):
+        display_frame = frame.copy()
+        
+        if self.lane_mask is None:
+            self.setup_lane(frame)
+        
+        # Apply lane mask
+        lane_roi = cv2.bitwise_and(frame, frame, mask=self.lane_mask)
+        
+        # Apply background subtraction with preprocessing
+        gray = cv2.cvtColor(lane_roi, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        fg_mask = self.bg_subtractor.apply(blur)
+        
+        # Improve mask quality with morphological operations
+        kernel = np.ones((5, 5), np.uint8)
+        cleaned_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+        cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Calculate motion metrics
+        nonzero_pixels = np.count_nonzero(cleaned_mask)
+        total_lane_pixels = np.count_nonzero(self.lane_mask)
+        motion_level = (nonzero_pixels / total_lane_pixels) * 100 if total_lane_pixels > 0 else 0
+        
+        # Find and filter contours using contour hierarchy for better accuracy
+        contours, hierarchy = cv2.findContours(cleaned_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Improved vehicle detection with aspect ratio and size filtering
+        valid_contours = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > self.min_contour_area:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = float(w)/h
+                # Filter based on typical vehicle aspect ratios
+                if 0.4 < aspect_ratio < 3.0:
+                    valid_contours.append(cnt)
+        
+        vehicle_count = len(valid_contours)
+        
+        # Improved traffic density calculation with weighted formula
+        traffic_density = min(100, (vehicle_count / self.road_capacity * 60) + (motion_level * 0.4))
+        
+        # Visualize results
+        cv2.drawContours(display_frame, valid_contours, -1, (0, 255, 0), 2)
+        
+        # Add semi-transparent lane overlay
+        overlay = display_frame.copy()
+        lane_area = np.zeros_like(display_frame)
+        lane_area[:,:,0] = self.lane_mask
+        display_frame = cv2.addWeighted(overlay, 0.8, lane_area, 0.2, 0)
+        
+        # Add metrics text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(display_frame, f"Vehicles: {vehicle_count}", (10, 30), font, 0.7, (0, 255, 255), 2)
+        cv2.putText(display_frame, f"Density: {traffic_density:.1f}%", (10, 60), font, 0.7, (0, 255, 255), 2)
+        cv2.putText(display_frame, f"Motion: {motion_level:.1f}%", (10, 90), font, 0.7, (0, 255, 255), 2)
+        
+        return display_frame, {
+            "vehicle_count": vehicle_count,
+            "traffic_density": traffic_density,
+            "motion_level": motion_level
+        }
+    
+    def calculate_signal_timing(self):
+        # Adaptive signal timing based on traffic flow theory
+        min_green = 20
+        max_green = 120
+        yellow_time = 5
+        
+        # Non-linear response to traffic density for more realistic timing
+        if self.traffic_density < 30:
+            # Low traffic gets shorter green times
+            green_time = min_green + (self.traffic_density / 30) * 20
+        else:
+            # Higher traffic gets progressively longer green times
+            green_time = min_green + 20 + ((self.traffic_density - 30) / 70) * (max_green - min_green - 20)
+        
+        # Ensure bounds
+        green_time = max(min_green, min(green_time, max_green))
+        red_time = green_time + yellow_time
+        
+        return {"green": green_time, "yellow": yellow_time, "red": red_time}
+
+class TrafficLightGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Traffic Management System")
+        self.root.geometry("1100x650")
+        
+        # Initialize analyzer and video capture
+        self.analyzer = TrafficAnalyzer()
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            messagebox.showerror("Error", "Could not open webcam.")
+            self.root.destroy()
+            return
+            
+        # Create main layout frames
+        self.left_panel = tk.Frame(root, width=700, bg='#222222')
+        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.right_panel = tk.Frame(root, width=400, bg='#333333')
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH)
+        
+        # Webcam display
+        self.webcam_label = tk.Label(self.left_panel)
+        self.webcam_label.pack(pady=10)
+        
+        # Traffic metrics panel
+        self.metrics_frame = tk.Frame(self.left_panel, bg='#f0f0f0', bd=2, relief=tk.RAISED)
+        self.metrics_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # Display labels
+        self.vehicle_label = tk.Label(self.metrics_frame, text="Vehicles: 0", font=("Arial", 14))
+        self.vehicle_label.pack(pady=5)
+        
+        self.density_label = tk.Label(self.metrics_frame, text="Traffic Density: 0%", font=("Arial", 14))
+        self.density_label.pack(pady=5)
+        
+        self.motion_label = tk.Label(self.metrics_frame, text="Motion Level: 0%", font=("Arial", 14))
+        self.motion_label.pack(pady=5)
+        
+        self.signal_label = tk.Label(self.metrics_frame, text="Signal Timing: G:max(min(wait_time, 150), 30)s Y:5s R:35s", font=("Arial", 14))
+        self.signal_label.pack(pady=5)
+        
+        # Lane adjustment panel (simplified)
+        self.lane_frame = tk.Frame(self.metrics_frame, bg='#f0f0f0')
+        self.lane_frame.pack(fill=tk.X, pady=10)
+        
+        # Create lane adjustment sliders in a more compact layout
+        sliders = [
+            ("Top", "top_slider", 50),
+            ("Bottom", "bottom_slider", 100),
+            ("Left", "left_slider", 0),
+            ("Right", "right_slider", 100)
+        ]
+        
+        for i, (label_text, attr_name, default) in enumerate(sliders):
+            tk.Label(self.lane_frame, text=f"{label_text}:").grid(row=i//2, column=i%2*2, sticky='e', padx=5, pady=2)
+            slider = tk.Scale(self.lane_frame, from_=0, to=100, orient=tk.HORIZONTAL)
+            slider.set(default)
+            slider.grid(row=i//2, column=i%2*2+1, sticky='ew', padx=5, pady=2)
+            setattr(self, attr_name, slider)
+        
+        # Control buttons
+        self.buttons_frame = tk.Frame(self.metrics_frame, bg='#f0f0f0')
+        self.buttons_frame.pack(fill=tk.X, pady=5)
+        
+        self.apply_button = tk.Button(self.buttons_frame, text="Apply Lane Settings", 
+                                     command=self.apply_lane_settings)
+        self.apply_button.pack(side=tk.LEFT, padx=10)
+        
+        self.ref_button = tk.Button(self.buttons_frame, text="Set Reference", 
+                                   command=self.set_reference_frame)
+        self.ref_button.pack(side=tk.LEFT, padx=10)
+        
+        # Traffic light display
+        self.light_size = 80
+        self.lights_frame = tk.Frame(self.right_panel, bg='#333333')
+        self.lights_frame.pack(pady=50)
+        
+        # Create traffic light circles
+        colors = [("red", "#500000", "#ff0000"), 
+                 ("yellow", "#504000", "#ffff00"), 
+                 ("green", "#005000", "#00ff00")]
+        
+        self.lights = {}
+        for color, dim_fill, bright_fill in colors:
+            frame = tk.Frame(self.lights_frame, bg='#333333')
+            frame.pack(pady=10)
+            canvas = tk.Canvas(frame, width=self.light_size, height=self.light_size, 
+                              bg='#333333', highlightthickness=0)
+            canvas.pack()
+            circle = canvas.create_oval(10, 10, self.light_size-10, self.light_size-10, 
+                                       fill=dim_fill, outline='#555555', width=2)
+            self.lights[color] = {"canvas": canvas, "circle": circle, "bright_fill": bright_fill, "dim_fill": dim_fill}
+        
+        # Timer display
+        self.timer_label = tk.Label(self.right_panel, text="", font=("Arial", 48, "bold"), bg='#333333', fg='white')
+        self.timer_label.pack(pady=20)
+        
+        # Initialize traffic light state
+        self.current_light = "red"
+        self.remaining_time = 30
+        self.traffic_timing = {"red": 30, "green": 30, "yellow": 5}
+        
+        # Thread control
+        self.is_running = True
+        
+        # Initialize reference frame
+        ret, frame = self.cap.read()
+        if ret:
+            self.analyzer.setup_lane(frame)
+        
+        # Start threads
+        self.traffic_thread = threading.Thread(target=self.traffic_light_cycle)
+        self.traffic_thread.daemon = True
+        self.traffic_thread.start()
+        
+        self.update_video()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+    
+    def set_reference_frame(self):
+        ret, frame = self.cap.read()
+        if ret:
+            self.analyzer.reference_image = frame.copy()
+            self.apply_lane_settings()
+            messagebox.showinfo("Success", "Reference frame set")
+    
+    def apply_lane_settings(self):
+        success = self.analyzer.setup_lane(
+            self.analyzer.reference_image,
+            self.top_slider.get(),
+            self.bottom_slider.get(),
+            self.left_slider.get(),
+            self.right_slider.get()
+        )
+        if not success:
+            messagebox.showwarning("Warning", "Set reference frame first")
+    
+    def update_video(self):
+        if not self.is_running:
+            return
+        
+        ret, frame = self.cap.read()
+        if ret:
+            # Process frame
+            processed_frame, data = self.analyzer.analyze_traffic(frame)
+            
+            # Update analyzer's traffic density for signal timing
+            self.analyzer.traffic_density = data["traffic_density"]
+            
+            # Calculate signal timing
+            signal_timing = self.analyzer.calculate_signal_timing()
+            
+            # Update UI
+            self.vehicle_label.config(text=f"Vehicles: {data['vehicle_count']}")
+            self.density_label.config(text=f"Traffic Density: {data['traffic_density']:.1f}%")
+            self.motion_label.config(text=f"Motion Level: {data['motion_level']:.1f}%")
+            self.signal_label.config(
+                text=f"Signal Timing: G:{signal_timing['green']:.1f}s Y:{signal_timing['yellow']}s R:{signal_timing['red']:.1f}s"
+            )
+            
+            # Update traffic cycle timing
+            self.traffic_timing = signal_timing
+            
+            # Update display image
+            cv_img = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(cv_img)
+            tk_img = ImageTk.PhotoImage(image=pil_img)
+            self.webcam_label.config(image=tk_img)
+            self.webcam_label.image = tk_img
+        
+        self.root.after(100, self.update_video)
+    
+    def traffic_light_cycle(self):
+        while self.is_running:
+            # Run through the traffic light sequence
+            for color in ["red", "green", "yellow"]:
+                self.set_traffic_light(color)
+                self.countdown(self.traffic_timing[color])
+    
+    def set_traffic_light(self, color):
+        self.current_light = color
+        
+        # Reset all lights to dim
+        for light_color, light_data in self.lights.items():
+            light_data["canvas"].itemconfig(light_data["circle"], fill=light_data["dim_fill"])
+        
+        # Set active light to bright
+        self.lights[color]["canvas"].itemconfig(self.lights[color]["circle"], fill=self.lights[color]["bright_fill"])
+    
+    def countdown(self, seconds):
+        self.remaining_time = int(seconds)
+        start_time = time.time()
+        
+        while self.remaining_time > 0 and self.is_running:
+            self.timer_label.config(text=str(self.remaining_time))
+            time.sleep(0.1)
+            elapsed = time.time() - start_time
+            self.remaining_time = max(0, int(seconds - elapsed))
+    
+    def on_close(self):
+        self.is_running = False
+        if self.cap.isOpened():
+            self.cap.release()
+        self.root.destroy()
+
+def main():
+    root = tk.Tk()
+    app = TrafficLightGUI(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
