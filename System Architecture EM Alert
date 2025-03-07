@@ -6,14 +6,14 @@ Computer vision model for visual identification
 Audio processing for siren detection
 
 
-TrafficSignalController: Manages traffic signal timing and prioritization:
+**TrafficSignalController: Manages traffic signal timing and prioritization:**
 
 Maintains a regular cycle for normal traffic flow
 Overrides the cycle when emergency vehicles are detected
 Provides real-time signal status updates
 
 
-EmergencyVehicleTrafficSystem: Integrates the detector and controller:
+**EmergencyVehicleTrafficSystem: Integrates the detector and controller:**
 
 Processes video feeds
 Reports detections to the controller
