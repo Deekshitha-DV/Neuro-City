@@ -5,7 +5,8 @@ import numpy as np
 from datetime import datetime
 import json
 
-# Configuration
+#Configuration
+
 CONNECTION_STRING = "YOUR_IOT_HUB_CONNECTION_STRING"
 COSMOS_URI = "YOUR_COSMOS_DB_URI"
 COSMOS_KEY = "YOUR_COSMOS_DB_KEY"
