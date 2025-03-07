@@ -1,0 +1,504 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+import librosa
+import threading
+import time
+from collections import deque
+
+class EmergencyVehicleDetector:
+    def __init__(self, model_path='emergency_vehicle_model.h5', confidence_threshold=0.65):
+        """
+        Initialize the emergency vehicle detector
+        
+        Args:
+            model_path: Path to the trained model for vehicle detection
+            confidence_threshold: Minimum confidence score to consider a detection valid
+        """
+        # Load the pre-trained model for vehicle detection
+        self.model = tf.keras.models.load_model(model_path)
+        self.confidence_threshold = confidence_threshold
+        
+        # Target classes for emergency vehicles
+        self.emergency_classes = ['ambulance', 'fire_engine', 'police_car']
+        
+        # Dictionary to map class indices to names
+        self.class_names = {
+            0: 'ambulance',
+            1: 'fire_engine',
+            2: 'police_car',
+            3: 'car',
+            4: 'truck',
+            5: 'bus',
+            6: 'motorcycle'
+        }
+        
+        # Initialize siren detection
+        self.audio_sample_rate = 44100
+        self.siren_detected = False
+        
+        # Frequency ranges for common emergency sirens (in Hz)
+        self.siren_frequency_ranges = [
+            (700, 1000),   # Common ambulance siren range
+            (400, 800),    # Common fire truck siren range
+            (1000, 1500)   # Common police siren range
+        ]
+
+    def preprocess_image(self, frame):
+        """Preprocess image for model input"""
+        # Resize to the expected input dimensions
+        img = cv2.resize(frame, (224, 224))
+        # Convert to RGB if it's BGR
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Normalize pixel values
+        img = img / 255.0
+        # Expand dimensions for model input
+        img = np.expand_dims(img, axis=0)
+        return img
+    
+    def detect_vehicles(self, frame):
+        """
+        Detect vehicles in a frame
+        
+        Args:
+            frame: Input video frame
+            
+        Returns:
+            List of detected emergency vehicles with bounding boxes and confidence scores
+        """
+        # Preprocess the frame
+        processed_frame = self.preprocess_image(frame)
+        
+        # Run inference
+        predictions = self.model.predict(processed_frame, verbose=0)
+        
+        # Process detections
+        emergency_vehicles = []
+        
+        # Assuming predictions format: [batch, grid_y, grid_x, anchors, (5 + num_classes)]
+        # where 5 is [x, y, w, h, confidence]
+        # This is a simplified processing - adjust based on actual model output format
+        height, width, _ = frame.shape
+        
+        for detection in predictions[0]:
+            # Extract confidence and class scores
+            confidence = detection[4]
+            class_scores = detection[5:]
+            
+            # If confidence is high enough
+            if confidence > self.confidence_threshold:
+                # Get class with highest score
+                class_id = np.argmax(class_scores)
+                class_name = self.class_names.get(class_id, 'unknown')
+                
+                # Check if it's an emergency vehicle
+                if class_name in self.emergency_classes:
+                    # Extract bounding box coordinates
+                    x_center, y_center, box_width, box_height = detection[0:4]
+                    
+                    # Convert normalized coordinates to pixel values
+                    x1 = int((x_center - box_width/2) * width)
+                    y1 = int((y_center - box_height/2) * height)
+                    x2 = int((x_center + box_width/2) * width)
+                    y2 = int((y_center + box_height/2) * height)
+                    
+                    # Add to detected vehicles
+                    emergency_vehicles.append({
+                        'type': class_name,
+                        'confidence': float(confidence),
+                        'bbox': (x1, y1, x2, y2)
+                    })
+        
+        return emergency_vehicles
+    
+    def analyze_audio(self, audio_data):
+        """
+        Analyze audio data to detect emergency sirens
+        
+        Args:
+            audio_data: Audio sample
+            
+        Returns:
+            Boolean indicating whether a siren is detected
+        """
+        # Compute the short-time Fourier transform (STFT)
+        D = librosa.stft(audio_data)
+        # Convert to power spectrogram
+        S = np.abs(D)**2
+        # Convert to mel-scale
+        mel_spec = librosa.feature.melspectrogram(S=S, sr=self.audio_sample_rate)
+        
+        # Detect frequency patterns typical of sirens
+        for freq_range in self.siren_frequency_ranges:
+            low_freq, high_freq = freq_range
+            # Convert frequency to mel bins
+            low_mel = librosa.hz_to_mel(low_freq)
+            high_mel = librosa.hz_to_mel(high_freq)
+            
+            # Get the corresponding mel bins
+            low_bin = int(low_mel / (librosa.hz_to_mel(self.audio_sample_rate/2) / mel_spec.shape[0]))
+            high_bin = int(high_mel / (librosa.hz_to_mel(self.audio_sample_rate/2) / mel_spec.shape[0]))
+            
+            # Check if there's significant energy in the siren frequency range
+            freq_band_energy = np.mean(mel_spec[low_bin:high_bin, :])
+            overall_energy = np.mean(mel_spec)
+            
+            # If energy in the siren band is significantly higher than the overall energy
+            if freq_band_energy > overall_energy * 2:
+                # Also check for oscillating pattern typical of sirens
+                # This is a simplified approach - real implementation would use more sophisticated methods
+                if self.detect_oscillation(mel_spec[low_bin:high_bin, :]):
+                    return True
+                
+        return False
+    
+    def detect_oscillation(self, spectrogram):
+        """
+        Detect oscillating patterns typical of sirens
+        
+        Args:
+            spectrogram: The audio spectrogram in the relevant frequency range
+            
+        Returns:
+            Boolean indicating whether oscillation pattern is detected
+        """
+        # Compute the mean across frequency bins
+        mean_energy = np.mean(spectrogram, axis=0)
+        
+        # Check for oscillation by looking at the peaks
+        if len(mean_energy) < 4:
+            return False
+            
+        # Find peaks
+        peaks = []
+        for i in range(1, len(mean_energy)-1):
+            if mean_energy[i] > mean_energy[i-1] and mean_energy[i] > mean_energy[i+1]:
+                peaks.append(i)
+        
+        # Check if peaks are regularly spaced (typical of sirens)
+        if len(peaks) >= 3:
+            intervals = np.diff(peaks)
+            interval_mean = np.mean(intervals)
+            interval_std = np.std(intervals)
+            
+            # If standard deviation is small compared to mean, oscillation is regular
+            if interval_std / interval_mean < 0.3:
+                return True
+                
+        return False
+
+
+class TrafficSignalController:
+    def __init__(self, num_lanes=4, default_cycle_time=30):
+        """
+        Initialize traffic signal controller
+        
+        Args:
+            num_lanes: Number of lanes in the intersection
+            default_cycle_time: Default time (in seconds) for each lane's green signal
+        """
+        self.num_lanes = num_lanes
+        self.default_cycle_time = default_cycle_time
+        self.current_lane = 0
+        self.lane_queue = deque(range(num_lanes))
+        self.emergency_detected = [False] * num_lanes
+        self.is_running = False
+        self.signal_thread = None
+        self.lock = threading.Lock()
+    
+    def report_emergency_vehicle(self, lane_id):
+        """
+        Report emergency vehicle detected in a lane
+        
+        Args:
+            lane_id: ID of the lane with emergency vehicle
+        """
+        with self.lock:
+            # Mark the lane as having emergency vehicle
+            self.emergency_detected[lane_id] = True
+            
+            # If the lane is not the current lane, we need to prioritize it
+            if lane_id != self.current_lane:
+                # Remove this lane from its current position in the queue
+                if lane_id in self.lane_queue:
+                    self.lane_queue.remove(lane_id)
+                
+                # Add it right after the current lane
+                current_index = 0
+                for i, lane in enumerate(self.lane_queue):
+                    if lane == self.current_lane:
+                        current_index = i
+                        break
+                
+                self.lane_queue.insert(current_index + 1, lane_id)
+                print(f"Emergency vehicle detected in lane {lane_id}. Prioritizing...")
+    
+    def start(self):
+        """Start the traffic signal controller"""
+        if not self.is_running:
+            self.is_running = True
+            self.signal_thread = threading.Thread(target=self._run_signal_cycle)
+            self.signal_thread.daemon = True
+            self.signal_thread.start()
+    
+    def stop(self):
+        """Stop the traffic signal controller"""
+        self.is_running = False
+        if self.signal_thread:
+            self.signal_thread.join()
+    
+    def _run_signal_cycle(self):
+        """Run the traffic signal cycle"""
+        while self.is_running:
+            with self.lock:
+                # Get the next lane
+                self.current_lane = self.lane_queue.popleft()
+                self.lane_queue.append(self.current_lane)
+                
+                # Check if there's an emergency vehicle
+                is_emergency = self.emergency_detected[self.current_lane]
+                # Reset the emergency status for this lane
+                self.emergency_detected[self.current_lane] = False
+            
+            # Set signal to green for this lane
+            print(f"GREEN signal for lane {self.current_lane}" + 
+                  (" (EMERGENCY VEHICLE PRIORITY)" if is_emergency else ""))
+            
+            # Wait for cycle time or reduced time for non-emergency
+            cycle_time = self.default_cycle_time if is_emergency else self.default_cycle_time // 2
+            time.sleep(cycle_time)
+            
+            # Set signal to yellow, then red
+            print(f"YELLOW signal for lane {self.current_lane}")
+            time.sleep(3)  # Yellow light duration
+            print(f"RED signal for lane {self.current_lane}")
+
+
+class EmergencyVehicleTrafficSystem:
+    def __init__(self, video_source, num_lanes=4, model_path='emergency_vehicle_model.h5'):
+        """
+        Initialize the complete system
+        
+        Args:
+            video_source: Camera input source(s)
+            num_lanes: Number of lanes at the intersection
+            model_path: Path to the trained emergency vehicle detection model
+        """
+        self.video_source = video_source
+        self.num_lanes = num_lanes
+        
+        # Initialize the vehicle detector
+        self.detector = EmergencyVehicleDetector(model_path=model_path)
+        
+        # Initialize the traffic controller
+        self.traffic_controller = TrafficSignalController(num_lanes=num_lanes)
+        
+        # Initialize video capture for each lane
+        self.video_captures = []
+        if isinstance(video_source, list):
+            for source in video_source:
+                self.video_captures.append(cv2.VideoCapture(source))
+        else:
+            # Single camera, will need to segment the view
+            self.video_captures.append(cv2.VideoCapture(video_source))
+        
+        self.is_running = False
+        self.processing_threads = []
+    
+    def segment_frame(self, frame):
+        """
+        Segment a single camera view into multiple lane views
+        
+        Args:
+            frame: Input frame from the camera
+            
+        Returns:
+            List of frames, one for each lane
+        """
+        height, width, _ = frame.shape
+        lane_width = width // self.num_lanes
+        
+        lane_frames = []
+        for i in range(self.num_lanes):
+            x_start = i * lane_width
+            x_end = (i + 1) * lane_width
+            lane_frame = frame[:, x_start:x_end, :]
+            lane_frames.append(lane_frame)
+            
+        return lane_frames
+    
+    def process_lane_video(self, lane_id, video_capture):
+        """
+        Process video for a specific lane
+        
+        Args:
+            lane_id: ID of the lane
+            video_capture: OpenCV VideoCapture object for this lane
+        """
+        while self.is_running:
+            success, frame = video_capture.read()
+            if not success:
+                print(f"Failed to read frame from lane {lane_id}")
+                time.sleep(0.1)
+                continue
+            
+            # Detect emergency vehicles in the frame
+            emergency_vehicles = self.detector.detect_vehicles(frame)
+            
+            # If emergency vehicles are detected, report to traffic controller
+            if emergency_vehicles:
+                self.traffic_controller.report_emergency_vehicle(lane_id)
+                
+                # Display the detections
+                for vehicle in emergency_vehicles:
+                    bbox = vehicle['bbox']
+                    cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
+                    label = f"{vehicle['type']} ({vehicle['confidence']:.2f})"
+                    cv2.putText(frame, label, (bbox[0], bbox[1]-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Display the frame
+            cv2.imshow(f"Lane {lane_id}", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    
+    def start(self):
+        """Start the system"""
+        self.is_running = True
+        
+        # Start the traffic controller
+        self.traffic_controller.start()
+        
+        # Start processing each lane
+        if len(self.video_captures) == 1 and self.num_lanes > 1:
+            # Single camera view needs to be segmented
+            processing_thread = threading.Thread(
+                target=self._process_segmented_video,
+                args=(self.video_captures[0],)
+            )
+            processing_thread.daemon = True
+            processing_thread.start()
+            self.processing_threads.append(processing_thread)
+        else:
+            # Multiple cameras, one for each lane
+            for lane_id, capture in enumerate(self.video_captures):
+                processing_thread = threading.Thread(
+                    target=self.process_lane_video,
+                    args=(lane_id, capture)
+                )
+                processing_thread.daemon = True
+                processing_thread.start()
+                self.processing_threads.append(processing_thread)
+    
+    def _process_segmented_video(self, video_capture):
+        """
+        Process video from a single camera that covers all lanes
+        
+        Args:
+            video_capture: OpenCV VideoCapture object
+        """
+        while self.is_running:
+            success, frame = video_capture.read()
+            if not success:
+                print("Failed to read frame")
+                time.sleep(0.1)
+                continue
+            
+            # Segment the frame into lane views
+            lane_frames = self.segment_frame(frame)
+            
+            # Process each lane
+            for lane_id, lane_frame in enumerate(lane_frames):
+                # Detect emergency vehicles
+                emergency_vehicles = self.detector.detect_vehicles(lane_frame)
+                
+                # If emergency vehicles are detected, report to traffic controller
+                if emergency_vehicles:
+                    self.traffic_controller.report_emergency_vehicle(lane_id)
+                    
+                    # Display the detections
+                    for vehicle in emergency_vehicles:
+                        bbox = vehicle['bbox']
+                        cv2.rectangle(lane_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
+                        label = f"{vehicle['type']} ({vehicle['confidence']:.2f})"
+                        cv2.putText(lane_frame, label, (bbox[0], bbox[1]-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                
+                # Display the lane frame
+                cv2.imshow(f"Lane {lane_id}", lane_frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    
+    def stop(self):
+        """Stop the system"""
+        self.is_running = False
+        
+        # Stop the traffic controller
+        self.traffic_controller.stop()
+        
+        # Join all processing threads
+        for thread in self.processing_threads:
+            thread.join()
+        
+        # Release all video captures
+        for capture in self.video_captures:
+            capture.release()
+        
+        # Close all windows
+        cv2.destroyAllWindows()
+
+
+def train_emergency_vehicle_model(dataset_path, output_model_path='emergency_vehicle_model.h5'):
+    """
+    Train a model to detect emergency vehicles
+    
+    Args:
+        dataset_path: Path to the dataset containing images of vehicles
+        output_model_path: Path to save the trained model
+    """
+    # This is a placeholder for the actual training code
+    # In a real implementation, you would:
+    # 1. Load and preprocess the dataset
+    # 2. Set up a CNN model (like YOLOv5, Faster R-CNN, or SSD)
+    # 3. Train the model on the dataset
+    # 4. Evaluate and save the model
+    
+    print(f"Training model with data from {dataset_path}")
+    print(f"Model would be saved to {output_model_path}")
+    print("Note: This is a placeholder. Real implementation would include actual model training.")
+
+
+# Example usage
+if __name__ == "__main__":
+    # Define video sources for each lane
+    # This could be camera URLs, file paths, or device IDs
+    video_sources = [
+        0,  # First camera (could be a file path like 'lane0.mp4')
+        1,  # Second camera
+        2,  # Third camera
+        3   # Fourth camera
+    ]
+    
+    # Or use a single camera for all lanes
+    # video_source = 0  # Main camera
+    
+    # Initialize the system
+    system = EmergencyVehicleTrafficSystem(
+        video_source=video_sources,
+        num_lanes=4,
+        model_path='emergency_vehicle_model.h5'
+    )
+    
+    try:
+        # Start the system
+        system.start()
+        
+        # Keep the main thread running
+        while True:
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        # Stop the system on keyboard interrupt
+        system.stop()
+        print("System stopped.")
